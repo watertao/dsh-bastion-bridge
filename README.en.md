@@ -209,6 +209,9 @@ Config file: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json` (auto-generat
 | `ssh_connect_timeout` | `15` | SSH handshake timeout (s) |
 | `retry_max_attempts` | `3` | Connect retries on failure |
 | `ssh_prefer_shell` | `true` | Use the persistent interactive shell; set `false` for the exec channel (server must support it) |
+| `relay_username` | empty | Relay mode (e.g. Qizhi TERM-SSHD): target username; when empty the `login:` prompt is left to `/input` |
+| `relay_password` | empty | Relay mode: target password; when empty the `password:` prompt is left to `/input` |
+| `relay_prompt_timeout` | `6` | Seconds to wait for relay prompts (min 3; includes the target password prompt after a next-hop SSH handshake) |
 | `keepalive_enabled` | `true` | Idle keep-alive switch |
 | `keepalive_interval_seconds` | `180` | Idle seconds before keep-alive fires (deferred while a command is running) |
 | `keepalive_command` | `ls` | Keep-alive command (must be harmless) |
@@ -223,6 +226,14 @@ Config file: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json` (auto-generat
 > is merged into `stdout` (the JSON `stderr` field is empty); the exit code still comes from the
 > command's own `$?`. Set `ssh_prefer_shell=false` if you need separate streams and the server
 > supports `exec_command`.
+
+> Relay note: `relay_*` is only needed when the bastion asks for the **target** machine's
+> `login:`/`password:` after SSH authentication (e.g. Qizhi TERM-SSHD), and it requires
+> `ssh_prefer_shell=true` (the exec channel does not answer relay prompts). With `relay_*` left
+> empty, behaviour is identical to a direct deployment. The password is stored in plain text in
+> the local `config.json` and is never written to the logs. If `login:` is answered but the
+> `password:` prompt does not appear before the timeout, the bridge aborts with an error and sends
+> no command (so `stty` can never be mistaken for the target password).
 
 ## 9. Logs & troubleshooting
 

@@ -46,6 +46,9 @@
 | `keepalive_interval_seconds` | `180` | 空闲多久触发保活（有指令在执行时顺延） |
 | `keepalive_command` | `ls` | 保活命令，须无害 |
 | `log_level` | `INFO` | DEBUG/INFO/WARNING/ERROR |
+| `relay_username` | 空 | 中继模式：目标机用户名（留空则 `login:` 交给 `/input`） |
+| `relay_password` | 空 | 中继模式：目标机密码（留空则 `password:` 交给 `/input`） |
+| `relay_prompt_timeout` | `6` | 等中继提示符的秒数（最小 3；含下一跳 ssh 握手后的密码提示） |
 
 ## 齐治版本适配
 

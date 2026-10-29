@@ -207,6 +207,9 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `ssh_connect_timeout` | `15` | SSH 握手超时（秒） |
 | `retry_max_attempts` | `3` | 连接失败重试次数 |
 | `ssh_prefer_shell` | `true` | 默认走持久交互 shell；设为 `false` 使用 exec 通道（要求服务器支持） |
+| `relay_username` | 空 | 中继模式（如齐志 TERM-SSHD）：目标机用户名；留空则 `login:` 留给 `/input` 人工应答 |
+| `relay_password` | 空 | 中继模式：目标机密码；留空则 `password:` 留给 `/input` 人工应答 |
+| `relay_prompt_timeout` | `6` | 等待中继提示符的秒数（最小 3；含跨一次 ssh 握手才出现的目标机密码提示） |
 | `keepalive_enabled` | `true` | 空闲保活开关 |
 | `keepalive_interval_seconds` | `180` | 空闲多久触发保活（有指令在执行时顺延） |
 | `keepalive_command` | `ls` | 保活命令（须无害） |
@@ -220,6 +223,12 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 > 通道说明：默认 `ssh_prefer_shell=true` 时命令在 PTY 交互 shell 里执行，`stderr` 会合并进
 > `stdout`（JSON 里的 `stderr` 为空），退出码仍取自命令本身的 `$?`。需要区分两路输出时，
 > 把 `ssh_prefer_shell` 设为 `false`，但要求目标服务器真的支持 `exec_command`。
+
+> 中继模式说明：只有「SSH 认证成功后还要再输目标机 `login:`/`password:`」的部署（如齐志
+> TERM-SSHD）才需要配置 `relay_*`，且必须保持 `ssh_prefer_shell=true`（exec 通道不做中继应答）。
+> 未配置 `relay_*` 时行为与直连部署完全一致；密码以明文存在本机 `config.json`，不会写入日志。
+> 若已应答 `login:` 但在超时内等不到 `password:`，桥接器会报错中止、不发送任何指令（避免把
+> `stty` 当成目标机密码）。
 
 ## 9. 日志与排错
 

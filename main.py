@@ -416,7 +416,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 prefer_shell=bool(config.get("ssh_prefer_shell", True)),
                 relay_username=str(config.get("relay_username", "") or "").strip(),
                 relay_password=str(config.get("relay_password", "") or ""),
-                relay_prompt_timeout=float(config.get("relay_prompt_timeout", 6)),
+                relay_prompt_timeout=float(config.get("relay_prompt_timeout") or 6),
             )
             connected = connect_with_retries(
                 bridge,
