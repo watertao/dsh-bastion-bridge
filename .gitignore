@@ -38,3 +38,6 @@ version_info.txt
 # 操作系统
 .DS_Store
 Thumbs.db
+
+# 厂商二进制与分析样本（不入库，版权与体积原因）
+assets/

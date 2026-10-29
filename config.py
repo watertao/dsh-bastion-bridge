@@ -38,6 +38,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 指令通道：齐治接入客户端经本地端口转发时 exec 往往只回登录横幅，
     # 默认走持久交互 shell；个别环境可改为 false 使用 exec 通道。
     "ssh_prefer_shell": True,
+    # 堡垒机中继模式：SSH 认证成功后，TERM-SSHD 会继续提示 login:/password:
+    # 要求输入【目标机】的用户名/密码（此时 shell 尚不可用）。
+    # relay_username/relay_password 留空时，提示符留给 /input 人工应答，
+    # 行为与直连部署完全一致（不主动发送任何字符）。
+    "relay_username": "",
+    "relay_password": "",
+    "relay_prompt_timeout": 6,
     # Log rotation.
     "log_max_bytes": 10 * 1024 * 1024,
     "log_backup_count": 5,

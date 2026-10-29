@@ -159,6 +159,9 @@ class SSHBridge:
         keepalive_command: str = "ls",
         command_guard: Optional[CommandGuard] = None,
         prefer_shell: bool = True,
+        relay_username: str = "",
+        relay_password: str = "",
+        relay_prompt_timeout: float = 6.0,
     ):
         self.params = params
         self._client: Optional[paramiko.SSHClient] = None
@@ -180,6 +183,18 @@ class SSHBridge:
         # exec_command 变成一段登录横幅，只有交互 shell 才能真正执行命令；
         # 从 shell 起步可以避免「第一条命令先撞横幅、被回退逻辑重跑一遍」。
         self._prefer_shell = bool(prefer_shell)
+
+        # 中继模式（如齐志 TERM-SSHD）：SSH 认证成功后，服务端还会提示
+        # login:/password: 索要【目标机】凭据，答完之前 shell 不可用。
+        # 未配置时完全不主动发送任何字符，行为与直连部署一致。
+        self._relay_username = (relay_username or "").strip()
+        self._relay_password = relay_password or ""
+        self._relay_prompt_timeout = max(3.0, float(relay_prompt_timeout))
+        # 已完成中继应答的通道 id 集合（每条新通道都要重新应答一遍）。
+        self._relay_ready: set[int] = set()
+        # 每条通道的中继应答进度（跨多次指令保持）。
+        self._relay_stage: dict[int, dict] = {}
+        self._relay_completed_once = False
 
         # Keep-alive configuration: if no command is sent for the configured
         # interval, an innocuous command is executed to keep the bastion/tunnel
@@ -380,12 +395,17 @@ class SSHBridge:
 
     def _keepalive_due(self) -> bool:
         """是否该发保活指令：空闲满间隔、已连接、且没有指令在执行。"""
-        return (
+        if not (
             self._keepalive_enabled
             and self.is_connected()
             and not self._is_busy()
             and (time.time() - self._last_activity_time) >= self._keepalive_interval_seconds
-        )
+        ):
+            return False
+        # 中继登录未完成前禁止保活命令，避免初始化字节污染 login:/password: 提示符。
+        if (self._relay_username or self._relay_password) and not self._relay_completed_once:
+            return False
+        return True
 
     def _guard_decision(self, command: str) -> Optional[GuardDecision]:
         """Return the guard decision for ``command`` (``None`` means allowed)."""
@@ -436,8 +456,116 @@ class SSHBridge:
         self._logger.debug("Opened temporary shell channel for command")
         return channel, True
 
+    # 中继登录提示符（行尾匹配）：齐志 TERM-SSHD 的 login:/Password: 等。
+    _RELAY_LOGIN_RE = re.compile(r"(?:login|username|user)\s*:\s*$", re.IGNORECASE)
+    _RELAY_PASSWORD_RE = re.compile(r"password\s*:\s*$", re.IGNORECASE)
+
+    def _complete_relay_login(self, channel: paramiko.Channel) -> None:
+        """Answer bastion relay prompts (``login:``/``password:``) on a channel.
+
+        齐志 TERM-SSHD 这类中继服务在 SSH 认证成功后会继续索要【目标机】的用户名
+        与密码，答完之前 shell 不可用。要点：
+
+        * 未配置 relay_username/relay_password（直连部署）→ 立即返回，零行为变化；
+        * 配置了凭据但服务端从未提示 → 静默快速退出（按直连处理，不拖慢指令）；
+        * 提示符出现但对应凭据未配置 → 留给 /input 人工应答，本轮不标记完成；
+        * 每条新通道都要重新应答一遍（新通道即新的中继登录会话）。
+        """
+        if id(channel) in self._relay_ready:
+            return
+        if not self._relay_username and not self._relay_password:
+            self._relay_ready.add(id(channel))
+            return
+
+        state = self._relay_stage.setdefault(id(channel), {"user": False, "pw": False})
+        quiet_window = max(0.3, min(1.5, self._relay_prompt_timeout / 2))
+        deadline = time.monotonic() + self._relay_prompt_timeout * 3
+        quiet_deadline = time.monotonic() + quiet_window
+        buffer = ""
+        answered_any = False
+        pending_manual = False
+
+        try:
+            while time.monotonic() < deadline:
+                if channel.recv_ready():
+                    quiet_deadline = time.monotonic() + quiet_window
+                    try:
+                        chunk = channel.recv(4096)
+                    except Exception as exc:  # noqa: BLE001
+                        self._logger.debug("Relay read failed: %s", exc)
+                        break
+                    if not chunk:
+                        break
+                    buffer = (buffer + chunk.decode("utf-8", "replace"))[-400:]
+                    tail = buffer.rstrip().lower()
+
+                    if not state["user"] and self._RELAY_LOGIN_RE.search(tail):
+                        self._logger.info("中继提示 login: 已应答（目标用户已发送）")
+                        self._send_all(
+                            channel, (self._relay_username + "\n").encode("utf-8"),
+                            timeout=10.0, lock=False,
+                        )
+                        self._bump_activity()
+                        state["user"] = True
+                        answered_any = True
+                        buffer = ""
+                        quiet_deadline = time.monotonic() + quiet_window
+                    elif not state["pw"] and self._RELAY_PASSWORD_RE.search(tail):
+                        if self._relay_password:
+                            self._logger.info("中继提示 password: 已应答")
+                            self._send_all(
+                                channel, (self._relay_password + "\n").encode("utf-8"),
+                                timeout=10.0, lock=False,
+                            )
+                            self._bump_activity()
+                            state["pw"] = True
+                            answered_any = True
+                            buffer = ""
+                            quiet_deadline = time.monotonic() + quiet_window
+                        else:
+                            # 密码未配置：不发送任何字符，把提示符留给 /input。
+                            self._logger.warning(
+                                "中继提示 password: 待应答；relay_password 未配置，"
+                                "请通过 /input 人工输入目标机密码"
+                            )
+                            pending_manual = True
+                            break
+                    continue
+
+                if time.monotonic() >= quiet_deadline:
+                    break
+                time.sleep(0.02)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("中继登录应答异常: %s", exc)
+
+        if pending_manual:
+            # 保持未完成状态：/input 应答后，下一次指令的探测轮会静默通过。
+            return
+
+        progressed = state["user"] or state["pw"]
+        if progressed:
+            self._relay_ready.add(id(channel))
+            self._relay_completed_once = True
+            self._logger.info("中继登录应答完成，等待 shell 就绪")
+        else:
+            # 本轮没有出现任何中继提示符 → 按直连处理，不拖慢后续指令。
+            self._relay_ready.add(id(channel))
+            self._logger.debug("未检测到中继提示符，按直连通道处理")
+
     def _prepare_shell_channel(self, channel: paramiko.Channel) -> None:
         """Discard stale output and turn off input echo before sending a command."""
+        # 中继模式下必须先应答 login:/password: 再发 stty，否则初始化字节
+        # 会被当成目标机用户名吃掉（表现为空用户名密码提示死循环）。
+        self._complete_relay_login(channel)
+        if id(channel) not in self._relay_ready:
+            # 中继尚未完成（例如目标机密码待人工输入）：禁止注入任何字符，
+            # 否则会把指令文本喂进密码提示符。让本次指令以错误收场，
+            # 提示调用方先通过 /input 应答。
+            self._drain_channel(channel, max_wait=0.2)
+            raise RuntimeError(
+                "中继登录未完成：目标机 login:/password: 提示符待应答，"
+                "请先通过 /input 输入目标机用户名/密码后再执行指令"
+            )
         # A fresh PTY may print the bastion login banner; allow up to a second
         # while still returning as soon as the channel goes quiet.
         self._drain_channel(channel, max_wait=1.0)
@@ -543,6 +671,9 @@ class SSHBridge:
         with self._lock:
             shell = self._shell
             self._shell = None
+        # 新通道意味着新的中继登录会话，必须重新应答 login:/password:。
+        self._relay_ready.clear()
+        self._relay_stage.clear()
         if shell is not None:
             try:
                 shell.close()

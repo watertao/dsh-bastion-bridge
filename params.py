@@ -1,4 +1,4 @@
-"""
+r"""
 Command-line parameter parsing for the Qizhi (齐治) bastion bridge.
 
 齐治堡垒机 launches the configured remote client directly, e.g.:
@@ -136,9 +136,13 @@ def _load_putty_session_file(raw_value: str) -> Dict[str, Any]:
     """
     result: Dict[str, Any] = {}
 
-    # Strip optional "tmp:" prefix and whitespace.
+    # Strip optional "tmp:" / "tmpd:" prefix and whitespace.
+    # 齐志改版 PuTTY 同时存在 tmp: 与 tmpd: 两种会话文件前缀（见其命令行解析）。
     value = raw_value.strip()
-    if value.lower().startswith("tmp:"):
+    lowered = value.lower()
+    if lowered.startswith("tmpd:"):
+        value = value[5:].strip()
+    elif lowered.startswith("tmp:"):
         value = value[4:].strip()
 
     if not value:

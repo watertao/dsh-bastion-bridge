@@ -202,6 +202,15 @@ def _display_runtime_config(config: Dict[str, Any], guard: CommandGuard) -> None
         "开启" if config.get("console_verbose", False) else "关闭",
     )
     log_console("    危险操作   : 兜底%s", "开启" if guard.enabled else "关闭")
+    relay_user = str(config.get("relay_username", "") or "").strip()
+    if relay_user or config.get("relay_password"):
+        log_console(
+            "    中继应答   : 用户 %s | 密码 %s（目标机凭据,不回显）",
+            relay_user or "待 /input 应答",
+            "已配置" if config.get("relay_password") else "待 /input 应答",
+        )
+    else:
+        log_console("    中继应答   : 未配置（直连模式）")
     log_console("    配置文件   : %s", get_config_path())
     log_console("    文件日志   : %s", get_log_path())
     log_blank_line()
@@ -405,6 +414,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 keepalive_command=str(config.get("keepalive_command", "ls")),
                 command_guard=command_guard,
                 prefer_shell=bool(config.get("ssh_prefer_shell", True)),
+                relay_username=str(config.get("relay_username", "") or "").strip(),
+                relay_password=str(config.get("relay_password", "") or ""),
+                relay_prompt_timeout=float(config.get("relay_prompt_timeout", 6)),
             )
             connected = connect_with_retries(
                 bridge,
