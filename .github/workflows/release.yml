@@ -65,24 +65,6 @@ jobs:
             dist/putty.exe.sha256
           if-no-files-found: error
 
-      - name: Publish build to artifact branch
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          work="$RUNNER_TEMP/artifact-branch"
-          mkdir -p "$work"
-          cp dist/putty.exe dist/putty.exe.sha256 "$work/"
-          cd "$work"
-          git init -q
-          git add putty.exe putty.exe.sha256
-          git -c user.name="github-actions[bot]" \
-              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-              commit -q -m "build: putty.exe for ${GITHUB_SHA}"
-          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:build-artifact
-
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
