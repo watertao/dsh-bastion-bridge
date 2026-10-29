@@ -46,6 +46,7 @@ from logger import (
     log_console,
     setup_logging,
 )
+import launcher
 from params import parse_args
 from ssh_client import SSHBridge
 from api_server import start_api
@@ -67,6 +68,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "console_log": True,
     "console_verbose": False,
     "console_output_limit": 12000,
+    # Hand-off to the stock PuTTY client: bridge | both | putty | auto.
+    "launch_mode": "bridge",
+    "original_client_path": "putty-original.exe",
 }
 
 
@@ -202,6 +206,19 @@ def _display_runtime_config(config: Dict[str, Any], guard: CommandGuard) -> None
         "开启" if config.get("console_verbose", False) else "关闭",
     )
     log_console("    危险操作   : 兜底%s", "开启" if guard.enabled else "关闭")
+    launch_mode = launcher.resolve_launch_mode(config)
+    mode_label = {
+        launcher.MODE_BRIDGE: "仅桥接器（只给 AI）",
+        launcher.MODE_BOTH: "桥接器 + 原版 PuTTY（两条独立会话）",
+        launcher.MODE_PUTTY: "仅原版 PuTTY（转交后退出）",
+        launcher.MODE_AUTO: "自动（首个实例给 AI，后续点击给原版 PuTTY）",
+    }.get(launch_mode, launch_mode)
+    log_console("    启动模式   : %s", mode_label)
+    if launch_mode != launcher.MODE_BRIDGE:
+        log_console(
+            "    原版客户端 : %s",
+            config.get("original_client_path") or launcher.DEFAULT_ORIGINAL_CLIENT,
+        )
     relay_user = str(config.get("relay_username", "") or "").strip()
     if relay_user or config.get("relay_password"):
         log_console(
@@ -357,6 +374,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     _display_startup(argv)
 
+    # Optional hand-off to the stock PuTTY client.  ``putty`` mode blocks until
+    # that window closes and then exits, which keeps Qizhi's tunnel alive.
+    launch = launcher.prepare(config, argv)
+    if launch.should_exit:
+        logger.info("Handed over to the original client; bridge exiting")
+        return int(launch.exit_code or 0)
+    if launch.mode == launcher.MODE_BOTH:
+        logger.info("Both mode: original client launched alongside the bridge")
+
     logger.info("=" * 60)
     logger.info("Qizhi SSH Bridge (putty.exe replacement) started")
     logger.info("Bridge version: v%s", __version__)
@@ -431,6 +457,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             logger.exception("Unexpected error creating SSH bridge: %s", exc)
             bridge = None
 
+    if launch.mode == launcher.MODE_BOTH and (bridge is None or not bridge.is_connected()):
+        logger.warning(
+            "Both mode: bridge did not connect; the bastion tunnel may allow one connection"
+        )
+        log_console(
+            "! both 模式下桥接器未连上；若原版 PuTTY 能正常登录，说明本次点击只允许一条连接",
+            level=40,
+        )
+        log_blank_line()
+
     if bridge is None:
         # Create a dummy bridge so the API can still expose /health diagnostics.
         logger.warning("Creating no-op bridge for diagnostic mode")
@@ -486,6 +522,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             bridge.close()
         except Exception as exc:
             logger.debug("Error closing bridge: %s", exc)
+        if launch.instance_lock is not None:
+            launch.instance_lock.release()
         logger.info("Qizhi SSH Bridge (putty.exe replacement) stopped")
         log_console("! 齐治桥接器已停止", level=30)
 

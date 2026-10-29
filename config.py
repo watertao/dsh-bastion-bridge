@@ -60,6 +60,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "console_log": True,
     "console_verbose": False,
     "console_output_limit": 12000,
+    # Optional hand-off to the stock PuTTY client.  ``bridge`` keeps the current
+    # behaviour; ``both`` also opens the original window; ``putty`` hands over
+    # entirely; ``auto`` elects one bridge and hands every later launch over.
+    # See launcher.py.
+    "launch_mode": "bridge",
+    "original_client_path": "putty-original.exe",
 }
 
 
@@ -109,6 +115,10 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
             logger.error("Failed to read config %s: %s", path, exc)
     else:
         logger.info("No config file found at %s; using defaults.", path)
+        # Materialise the defaults so users can edit the file (the README
+        # documents it as auto-created).  Best effort: if the location is not
+        # writable the bridge still runs with in-memory defaults.
+        save_config(config, path)
 
     # Resolve Windows environment variables (e.g. %USERPROFILE%).
     config = _expand_env(config)

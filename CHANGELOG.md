@@ -1,5 +1,18 @@
 # 更新记录
 
+## v1.7.0（未发布）
+
+### 主要变化
+
+- **launch_mode 启动模式**：同一份 `putty.exe` 可以按需选择行为——`bridge`（默认，只给 AI）、`both`（把齐治传来的参数原样转交给原版 PuTTY，同时保留桥接器，两条独立会话）、`putty`（只转交原版后退出，等价于没换过 putty.exe）、`auto`（用进程级文件锁选出一个桥接实例，第一次点击给 AI，之后每次点击都转交原版 PuTTY——每次点击各建一条隧道，不依赖“一条隧道开两条连接”）。原版路径由 `original_client_path` 指定，默认找 `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\putty-original.exe`，找不到时安全回退到 `bridge`。
+- `auto` 的实例锁用操作系统文件锁实现（Windows `msvcrt.locking` / POSIX `flock`），进程退出（含崩溃）时由内核自动释放，不会留下需要手工清理的锁文件。
+- 新增 `mode.txt` 覆盖与 `scripts\set-mode.cmd`：切换模式**不需要管理员权限**，下一次点击资源时生效。
+- 修复 README 6.4 的还原命令：正确匹配带时间戳的 `putty.exe.bak.*`，并说明手动生成的 `putty.exe.bak` 不在 `uninstall.ps1` 的匹配范围内。
+
+### 测试
+
+- 新增 `tests/test_launcher.py`：模式解析与别名、`mode.txt` 优先级、原版路径解析、自引用保护、参数原样转发、`putty` 模式等待并透传退出码、原版缺失/启动失败回退 `bridge`。
+
 ## v1.6.0（2026-10-29）
 
 ### 主要变化

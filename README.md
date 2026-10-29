@@ -165,10 +165,75 @@ Copy-Item ".\dist\putty.exe" "C:\Program Files (x86)\QizhiTech\AccessClient\putt
 ### 6.4 想还原官方 putty.exe？
 
 ```powershell
-Copy-Item "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe.bak" "C:\Program Files (x86)\QizhiTech\AccessClient\putty.exe" -Force
+$dir = "C:\Program Files (x86)\QizhiTech\AccessClient"
+$bak = Get-ChildItem $dir -Filter "putty.exe.bak*" |
+       Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Copy-Item $bak.FullName (Join-Path $dir "putty.exe") -Force
 ```
 
-或运行 `scripts\uninstall.ps1 -RestoreBridge`（自动从最新的 `.bak` 还原，需要管理员权限时自动提权）。
+或运行 `scripts\uninstall.ps1 -RestoreBridge`（自动从最新的 `putty.exe.bak.*` 还原，需要管理员权限时自动提权）。
+注意：安装脚本的备份名带时间戳（`putty.exe.bak.<yyyyMMddHHmmss>`）；若你当初按 6.1 手动备份成不带时间戳的
+`putty.exe.bak`，`-RestoreBridge` 不会匹配到它，请直接用上面的命令手动还原。
+
+### 6.5 同时保留原版 PuTTY（launch_mode）
+
+桥接器接管 `putty.exe` 后不再打开交互终端。如果希望"AI 用桥接器、自己仍用原来的 PuTTY 窗口"，
+不需要管理员权限，也不需要改堡垒机的工具配置：把原版客户端放到用户可写目录，然后用 `launch_mode`
+切换启动行为。
+
+| 模式 | 行为 |
+|---|---|
+| `bridge` | 默认。只连 SSH 并启动 API，只给 AI 用 |
+| `both` | **同时**拉起原版 PuTTY（参数原样转发）并保留桥接器，两条独立会话 |
+| `putty` | 只把这次点击转交原版 PuTTY，桥接器退出（等价于没换过 putty.exe） |
+| `auto` | 第一次点击给 AI，之后每次点击自动打开原版 PuTTY（每次点击各建一条隧道，最稳） |
+
+**怎么选**：想稳一点直接用 `auto`——每次点击各自建立一条新隧道（和你双开老 putty 的机制完全一样），
+第一次给 AI、后面每次都给老 PuTTY，不会撞“单连接”限制；代价是每次都要点两下，审计上也是两条会话。
+`both` 更省事（一次点击两个窗口），但要求“同一条隧道能被两个客户端各连一次”，需要实测。
+
+**① 放一份原版客户端到用户目录**（从安装脚本的备份复制，不需要管理员）：
+
+```powershell
+$app = Join-Path $env:LOCALAPPDATA "sshbridge\QizhiSSHBridge"
+New-Item -ItemType Directory -Force $app | Out-Null
+$bak = Get-ChildItem "C:\Program Files (x86)\QizhiTech\AccessClient" -Filter "putty.exe.bak*" |
+       Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Copy-Item $bak.FullName (Join-Path $app "putty-original.exe") -Force
+```
+
+> 也可以**不移动**原版：把它放在 `putty.exe` 同级目录并命名为 `putty.exe.original`（或 `putty-original.exe`）即可，
+> 桥接器会先找用户目录、再找 `putty.exe` 所在目录，认这几个名字：`putty-original.exe`、`putty.exe.original`、
+> `putty.original.exe`、`putty-original`。两份都存在时优先用用户目录那份。
+> 若没有 `.bak` 备份，可从齐治客户端安装包或另一台同版本机器上取回原版 `putty.exe`，按上面的名字放好。
+
+**② 切换模式**（`mode.txt` 优先于 `config.json`，点击资源时读取）：
+
+```powershell
+$app = Join-Path $env:LOCALAPPDATA "sshbridge\QizhiSSHBridge"
+"both" | Set-Content (Join-Path $app "mode.txt") -Encoding ascii
+# 或仓库内执行：scripts\set-mode.cmd both
+```
+
+**③ 点击 SSH 资源**：
+
+- `both`：一次点击同时出现原版 PuTTY 窗口（你登录、执行命令）和桥接器控制台（AI 用）；
+- `auto`：第一次点击只出现桥接器控制台（给 AI）；再点一次同一资源就打开原版 PuTTY（你登录用），
+  之后每次点击都打开原版 PuTTY。两条会话互相独立。
+
+> 建议：想稳一点直接用 `auto`（点两下，每次点击各一条隧道，不依赖“一条隧道开两条连接”）；
+> 想省一次点击再试 `both`。
+
+> 前提与注意事项：
+> - 堡垒机需允许同一资源同时开两条连接（可先用老 putty 连点两次同一资源验证）。若原版 PuTTY 登录失败，
+>   说明这次点击的本地会话只接受一条连接，`both` 不可用，改用 `putty` 或 `bridge`。
+> - 桥接器那条会话同样会碰到 `login:`/`password:`，需要配置 `relay_username`/`relay_password`
+>   （目标机凭据，明文存放在本机 `config.json`），否则 AI 会停在登录提示符，只能由 `/input` 应答。
+> - 两条会话不共享 shell：AI 的执行结果不会出现在你的 PuTTY 窗口；桥接器控制台会实时显示
+>   `>>> 指令` / `<<< 返回`，把它和 PuTTY 并排看即可。若要在同一个 shell 里看 AI 操作，需要目标机
+>   上的 `tmux`，当前版本尚未内置。
+> - `both` 模式下请保持桥接器控制台窗口开启：关闭它会结束 AI 会话，并可能连带断开堡垒机隧道
+>   （你的 PuTTY 也会掉线）。
 
 ## 7. REST API 速查
 
@@ -219,6 +284,8 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `console_log` | `true` | 是否显示彩色控制台状态、指令与返回预览 |
 | `console_verbose` | `false` | 是否在控制台同时显示详细 INFO/DEBUG 技术日志 |
 | `console_output_limit` | `12000` | 单个指令或输出字段的控制台预览上限；不影响 API 返回的完整数据 |
+| `launch_mode` | `bridge` | 启动行为：`bridge` 只给 AI / `both` 同时拉起原版 PuTTY / `putty` 只转交原版 / `auto` 首个实例给 AI、后续转交（详见 6.5） |
+| `original_client_path` | `putty-original.exe` | 原版 PuTTY 路径；相对路径先找 `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge`，再找桥接器所在目录 |
 
 > 通道说明：默认 `ssh_prefer_shell=true` 时命令在 PTY 交互 shell 里执行，`stderr` 会合并进
 > `stdout`（JSON 里的 `stderr` 为空），退出码仍取自命令本身的 `$?`。需要区分两路输出时，
