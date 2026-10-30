@@ -275,6 +275,7 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 | `relay_username` | 空 | 中继模式（如齐志 TERM-SSHD）：目标机用户名；留空则 `login:` 留给 `/input` 人工应答 |
 | `relay_password` | 空 | 中继模式：目标机密码；留空则 `password:` 留给 `/input` 人工应答 |
 | `relay_prompt_timeout` | `6` | 等待中继提示符的秒数（最小 3；含跨一次 ssh 握手才出现的目标机密码提示） |
+| `relay_hosts` | `{}` | 按目标主机 IP 分别配置中继凭据（见下文「多目标主机凭据」） |
 | `keepalive_enabled` | `true` | 空闲保活开关 |
 | `keepalive_interval_seconds` | `180` | 空闲多久触发保活（有指令在执行时顺延） |
 | `keepalive_command` | `ls` | 保活命令（须无害） |
@@ -296,6 +297,33 @@ curl -X POST http://127.0.0.1:8766/execute -H "Content-Type: application/json" -
 > 未配置 `relay_*` 时行为与直连部署完全一致；密码以明文存在本机 `config.json`，不会写入日志。
 > 若已应答 `login:` 但在超时内等不到 `password:`，桥接器会报错中止、不发送任何指令（避免把
 > `stty` 当成目标机密码）。
+
+### 多目标主机凭据（relay_hosts）
+
+如果不同目标主机使用不同的账号密码，无需每次切换前修改全局 `relay_username`/`relay_password`，
+在 `relay_hosts` 里按目标主机 IP 各配一份即可。桥接器启动时按网关传入的目标 IP 精确匹配：
+
+```json
+{
+  "relay_username": "root",
+  "relay_password": "默认密码",
+  "relay_hosts": {
+    "10.1.1.100": { "username": "root",  "password": "aaa" },
+    "10.1.1.101": { "username": "admin", "password": "bbb",
+                    "relay_prompt_timeout": 10 },
+    "*":          { "username": "ops",   "password": "ccc" }
+  }
+}
+```
+
+匹配规则：
+
+1. 精确命中目标 IP 的条目 → 使用该条目的 `username` / `password`（可选 `relay_prompt_timeout`）；
+2. 未命中但存在 `"*"` 条目 → 使用 `"*"` 条目；
+3. 都没有 → 回落到全局 `relay_username` / `relay_password`（与旧版行为完全一致）。
+
+条目中省略的字段同样回落到全局值；全部未配置时提示符留给 `/input` 人工应答。
+凭据不会写入日志。
 
 ## 9. 日志与排错
 

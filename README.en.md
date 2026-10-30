@@ -212,6 +212,7 @@ Config file: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json` (auto-generat
 | `relay_username` | empty | Relay mode (e.g. Qizhi TERM-SSHD): target username; when empty the `login:` prompt is left to `/input` |
 | `relay_password` | empty | Relay mode: target password; when empty the `password:` prompt is left to `/input` |
 | `relay_prompt_timeout` | `6` | Seconds to wait for relay prompts (min 3; includes the target password prompt after a next-hop SSH handshake) |
+| `relay_hosts` | `{}` | Per-target-host relay credentials keyed by target IP (see "Per-target credentials" below) |
 | `keepalive_enabled` | `true` | Idle keep-alive switch |
 | `keepalive_interval_seconds` | `180` | Idle seconds before keep-alive fires (deferred while a command is running) |
 | `keepalive_command` | `ls` | Keep-alive command (must be harmless) |
@@ -234,6 +235,35 @@ Config file: `%LOCALAPPDATA%\sshbridge\QizhiSSHBridge\config.json` (auto-generat
 > the local `config.json` and is never written to the logs. If `login:` is answered but the
 > `password:` prompt does not appear before the timeout, the bridge aborts with an error and sends
 > no command (so `stty` can never be mistaken for the target password).
+
+### Per-target credentials (relay_hosts)
+
+When different target hosts use different credentials, list them under `relay_hosts` keyed by the
+target IP instead of editing the global `relay_username`/`relay_password` before every launch.
+The bridge matches the exact target host string passed by the gateway:
+
+```json
+{
+  "relay_username": "root",
+  "relay_password": "default-pw",
+  "relay_hosts": {
+    "10.1.1.100": { "username": "root",  "password": "aaa" },
+    "10.1.1.101": { "username": "admin", "password": "bbb",
+                    "relay_prompt_timeout": 10 },
+    "*":          { "username": "ops",   "password": "ccc" }
+  }
+}
+```
+
+Lookup order:
+
+1. An exact match on the target IP → that entry's `username` / `password` (and optional
+   `relay_prompt_timeout`);
+2. Otherwise the `"*"` catch-all entry, if present;
+3. Otherwise the global `relay_username` / `relay_password` (identical to older versions).
+
+Fields omitted in an entry fall back to the global values; with nothing configured the prompts
+are left to manual `/input` answers. Credentials are never written to the logs.
 
 ## 9. Logs & troubleshooting
 

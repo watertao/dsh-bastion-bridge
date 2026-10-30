@@ -1,6 +1,16 @@
 # 更新记录
 
-## v1.7.0（未发布）
+## v1.8.0（未发布）
+
+### 主要变化
+
+- **按目标主机 IP 配置中继凭据**：新增 `relay_hosts` 配置项，可按目标机 IP（或 `"*"` 兜底）分别配置 `username` / `password` / `relay_prompt_timeout`，桥接器按网关传入的目标 IP 精确匹配后回落到全局 `relay_username` / `relay_password`，旧配置零改动兼容。多台凭据不同的目标机之间切换不再需要每次修改 config.json。
+
+### 测试
+
+- 新增 `tests/test_relay_host_profiles.py`：`relay_hosts` 精确匹配、`"*"` 兜底、部分字段回落全局值、每台超时覆盖、畸形条目与超时下限处理。
+
+## v1.7.0（2026-10-30）
 
 ### 主要变化
 
@@ -8,10 +18,12 @@
 - `auto` 的实例锁用操作系统文件锁实现（Windows `msvcrt.locking` / POSIX `flock`），进程退出（含崩溃）时由内核自动释放，不会留下需要手工清理的锁文件。
 - 新增 `mode.txt` 覆盖与 `scripts\set-mode.cmd`：切换模式**不需要管理员权限**，下一次点击资源时生效。
 - 修复 README 6.4 的还原命令：正确匹配带时间戳的 `putty.exe.bak.*`，并说明手动生成的 `putty.exe.bak` 不在 `uninstall.ps1` 的匹配范围内。
+- **按目标主机 IP 配置中继凭据**：新增 `relay_hosts` 配置项，可按目标机 IP（或 `"*"` 兜底）分别配置 `username` / `password` / `relay_prompt_timeout`，桥接器按网关传入的目标 IP 精确匹配后回落到全局 `relay_username` / `relay_password`，旧配置零改动兼容。多台凭据不同的目标机之间切换不再需要每次修改 config.json。
 
 ### 测试
 
 - 新增 `tests/test_launcher.py`：模式解析与别名、`mode.txt` 优先级、原版路径解析、自引用保护、参数原样转发、`putty` 模式等待并透传退出码、原版缺失/启动失败回退 `bridge`。
+- 新增 `tests/test_relay_host_profiles.py`：`relay_hosts` 精确匹配、`"*"` 兜底、部分字段回落全局值、每台超时覆盖、畸形条目与超时下限处理。
 
 ## v1.6.0（2026-10-29）
 

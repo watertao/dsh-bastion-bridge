@@ -36,7 +36,7 @@ except ImportError:
 
 from connection import ConnectionParams
 from command_guard import CommandGuard
-from config import load_config
+from config import load_config, resolve_relay_credentials
 from logger import (
     get_app_dir,
     get_config_path,
@@ -186,7 +186,9 @@ def _display_startup(argv: List[str]) -> None:
     log_blank_line()
 
 
-def _display_runtime_config(config: Dict[str, Any], guard: CommandGuard) -> None:
+def _display_runtime_config(
+    config: Dict[str, Any], guard: CommandGuard, target_host: Any = None
+) -> None:
     """Show the effective runtime settings (never credentials or command bodies)."""
     keepalive_enabled = bool(config.get("keepalive_enabled", True))
     keepalive_command = str(config.get("keepalive_command", "ls"))
@@ -219,12 +221,12 @@ def _display_runtime_config(config: Dict[str, Any], guard: CommandGuard) -> None
             "    原版客户端 : %s",
             config.get("original_client_path") or launcher.DEFAULT_ORIGINAL_CLIENT,
         )
-    relay_user = str(config.get("relay_username", "") or "").strip()
-    if relay_user or config.get("relay_password"):
+    relay = resolve_relay_credentials(config, target_host)
+    if relay["username"] or relay["password"]:
         log_console(
             "    中继应答   : 用户 %s | 密码 %s（目标机凭据,不回显）",
-            relay_user or "待 /input 应答",
-            "已配置" if config.get("relay_password") else "待 /input 应答",
+            relay["username"] or "待 /input 应答",
+            "已配置" if relay["password"] else "待 /input 应答",
         )
     else:
         log_console("    中继应答   : 未配置（直连模式）")
@@ -427,12 +429,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 内部危险操作兜底：桥接器与 API 共用同一实例（见 command_guard.py）。
     command_guard = CommandGuard.from_config(config)
-    _display_runtime_config(config, command_guard)
+    _display_runtime_config(config, command_guard, params.host if params else None)
 
     # Bridge and connect.
     bridge: Optional[SSHBridge] = None
     if params is not None:
         try:
+            relay = resolve_relay_credentials(config, params.host)
             bridge = SSHBridge(
                 params,
                 keepalive_enabled=bool(config.get("keepalive_enabled", True)),
@@ -440,9 +443,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 keepalive_command=str(config.get("keepalive_command", "ls")),
                 command_guard=command_guard,
                 prefer_shell=bool(config.get("ssh_prefer_shell", True)),
-                relay_username=str(config.get("relay_username", "") or "").strip(),
-                relay_password=str(config.get("relay_password", "") or ""),
-                relay_prompt_timeout=float(config.get("relay_prompt_timeout") or 6),
+                relay_username=relay["username"],
+                relay_password=relay["password"],
+                relay_prompt_timeout=relay["prompt_timeout"],
             )
             connected = connect_with_retries(
                 bridge,
