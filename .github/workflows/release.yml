@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "可选：手动指定版本号（如 1.8.1-rc1）；留空时 tag 构建取 tag 名、dispatch 构建自动打 <当前版本>-dev.<run号>+<commit短sha> 戳"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -28,20 +34,42 @@ jobs:
       - name: Install pinned dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Stamp version from tag
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Stamp version (tag / input / dev)
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
           $content = Get-Content -Path version.py -Raw
           # 捕获引号前缀与行尾（可能是 CRLF），只替换版本号本身。
           $pattern = '(?m)^(__version__[ \t]*=[ \t]*")[^"]*("[ \t]*\r?)$'
           if (-not [regex]::IsMatch($content, $pattern)) {
             throw "version.py 中未找到 __version__ 行"
           }
-          $updated = [regex]::Replace($content, $pattern, "`${1}$version`${2}")
+          if ($env:INPUT_VERSION) {
+            $version = "$($env:INPUT_VERSION)"
+          } elseif ($env:IS_TAG -eq "true") {
+            $version = "$($env:REF_NAME)".TrimStart('v')
+          } else {
+            # dispatch 构建：以 version.py 当前版本为基线打 dev 戳，
+            # run 号 + commit 短 sha 保证每次构建可区分（/health 也能看到）。
+            $current = [regex]::Match(
+              $content, '(?m)^__version__[ \t]*=[ \t]*"([^"]*)"'
+            ).Groups[1].Value
+            $shortSha = "$($env:SHA)".Substring(0, 7)
+            $version = "$current-dev.$($env:RUN_NUMBER)+$shortSha"
+          }
+          # 替换串里防 $ 注入（$$ 在 .NET Regex.Replace 中是字面 $）。
+          $safeVersion = $version -replace '\$', '$$'
+          $updated = [regex]::Replace($content, $pattern, "`${1}$safeVersion`${2}")
           Set-Content -Path version.py -Value $updated -Encoding utf8 -NoNewline
           Write-Host "Stamped version.py with $version"
+          "BUILD_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # artifact 名只允许字母数字和 -_.，+ 会非法。
+          "BUILD_ARTIFACT_VERSION=$($version -replace '\+', '-')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run console and redaction tests
         run: python -m unittest discover -s tests -v
@@ -59,7 +87,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: qizhi-bridge-putty
+          name: qizhi-bridge-putty-v${{ env.BUILD_ARTIFACT_VERSION }}
           path: |
             dist/putty.exe
             dist/putty.exe.sha256

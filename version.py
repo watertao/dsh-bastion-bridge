@@ -1,8 +1,15 @@
 """桥接器版本号。
 
-源码里的版本号与即将发布的 Release 保持一致；CI 打 tag 构建时会由
+源码里的版本号与即将发布的 Release 保持一致；CI 构建时会由
 .github/workflows/release.yml 只替换本文件的 __version__ 一行，保证 EXE 里的
-版本与 Release 一致。发新版本时先改这里、再打同名 tag。
+版本与构建来源一致：
+
+- 打 ``v*`` 标签构建：取标签名（如 v1.8.1 → 1.8.1），并发布 Release；
+- workflow_dispatch 手动构建：可用 ``version`` 输入指定版本号，留空则自动
+  打 ``<当前版本>-dev.<run号>+<commit短sha>`` 戳（如 1.8.0-dev.42+79ebf37），
+  仅上传构建产物，不发布 Release。
+
+发新版本时先改这里、再打同名 tag。
 """
 
 __version__ = "1.8.0"

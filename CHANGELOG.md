@@ -4,6 +4,7 @@
 
 ### 主要变化
 
+- **workflow_dispatch 构建也打版本戳**：手动触发的构建此前沿用 version.py 残留版本号，与已发布的同号 EXE 无法区分；现自动打 `<当前版本>-dev.<run号>+<commit短sha>` 戳（如 `1.8.0-dev.42+79ebf37`，`/health` 与启动横幅可见，artifact 名同步带版本），也可用 dispatch 的 `version` 输入手动指定；tag 构建行为不变。
 - **按目标主机 IP 配置中继凭据**：新增 `relay_hosts` 配置项，可按目标机 IP（或 `"*"` 兜底）分别配置 `username` / `password` / `relay_prompt_timeout`，命中条目覆盖全局 `relay_username` / `relay_password`，旧配置零改动兼容。多台凭据不同的目标机之间切换不再需要每次修改 config.json。目标主机的取法：直连部署按命令行传入的主机；中继部署（tmp: 会话）命令行主机是中继节点 IP，v1.8.0 初版按它查表导致条目永不命中、静默回落全局密码（表现为固定 Permission denied），现改为在 `password:` 提示符文本（`root@<目标>'s password:`）中解析出目标主机后再查表；中继部署里 `login:` 先于目标主机出现，username 一律取全局值。
 
 - **中继拒绝回包晚到不再误报就绪**：密码发出后的 settle 静默期从 ~1.5s 提高到 ≥3s——中继→目标机的认证拒绝回包实测 ~2s 才到，旧窗口会在拒绝到达前宣告「中继登录应答完成」，随后注入的 stty/指令被新密码提示符当成密码吃掉。拒绝报错现在会指明目标主机与应查的配置键（如 `relay_hosts[<目标IP>]`）。
