@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from logger import get_config_path, get_logger
 
@@ -45,10 +45,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "relay_username": "",
     "relay_password": "",
     "relay_prompt_timeout": 6,
-    # 按目标主机 IP 分别配置中继（目标机）凭据；键为网关传入的目标主机
-    # 地址字符串（如 "10.1.1.100"），"*" 可作为兜底条目。命中条目的
-    # username/password/relay_prompt_timeout 覆盖全局值，未配置的字段
-    # 继续回落到全局 relay_username/relay_password/relay_prompt_timeout。
+    # 按目标主机分别配置中继（目标机）凭据；键为目标主机地址（如
+    # "10.1.1.100"），"*" 可作为兜底条目。目标主机的取法：直连部署
+    # （tmpd: 会话）用网关命令行传入的主机；中继部署（tmp: 会话）命令行
+    # 主机是中继节点 IP，桥接器会等 password: 提示符文本
+    # （root@<目标>'s password:）解析出目标主机后再按此键查表。
+    # 命中条目的 password/relay_prompt_timeout 覆盖全局值，未配置的字段
+    # 继续回落到全局值；中继部署里 login: 提示符先于目标主机出现，
+    # username 一律取全局 relay_username。
     # 示例::
     #
     #   "relay_hosts": {
@@ -180,8 +184,11 @@ def resolve_relay_credentials(
 
     Lookup order:
 
-    1. ``relay_hosts[<target_host>]`` — exact match on the host string the
-       gateway passed on the command line (typically the target IP);
+    1. ``relay_hosts[<target_host>]`` — exact match on the host string:
+       direct deployments use the host the gateway passed on the command
+       line (typically the target IP), relay deployments use the host
+       parsed from the password prompt (``root@<target>'s password:``)
+       at answer time;
     2. ``relay_hosts["*"]`` — optional catch-all entry;
     3. Global ``relay_username`` / ``relay_password`` / ``relay_prompt_timeout``.
 
@@ -222,3 +229,31 @@ def resolve_relay_credentials(
         "password": password,
         "prompt_timeout": max(3.0, prompt_timeout),
     }
+
+
+def make_relay_password_resolver(
+    config: Dict[str, Any],
+) -> Callable[[str], str]:
+    """Build a per-target-host relay password resolver from ``relay_hosts``.
+
+    返回的回调以【password: 提示符文本中解析出的目标主机】为键解析应答
+    密码：``relay_hosts[<host>]`` 精确命中 → 条目密码；否则 ``"*"``
+    兜底；再否则全局 ``relay_password``。中继部署里命令行主机是中继
+    节点 IP（与 relay_hosts 键无关），SSHBridge 在应答 password: 提示符
+    时才调用本回调，用真实目标主机查表。
+    """
+    entries = config.get("relay_hosts")
+    entries = entries if isinstance(entries, dict) else {}
+
+    def _resolve(prompt_host: str) -> str:
+        host = str(prompt_host or "").strip()
+        resolved = resolve_relay_credentials(config, host)
+        hit = isinstance(entries.get(host), dict)
+        logger.info(
+            "中继凭据解析: 目标主机=%s relay_hosts %s",
+            host or "未识别",
+            "命中" if hit else "未命中（回落 */全局 relay_password）",
+        )
+        return resolved["password"]
+
+    return _resolve

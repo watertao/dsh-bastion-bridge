@@ -36,7 +36,7 @@ except ImportError:
 
 from connection import ConnectionParams
 from command_guard import CommandGuard
-from config import load_config, resolve_relay_credentials
+from config import load_config, make_relay_password_resolver, resolve_relay_credentials
 from logger import (
     get_app_dir,
     get_config_path,
@@ -224,7 +224,7 @@ def _display_runtime_config(
     relay = resolve_relay_credentials(config, target_host)
     if relay["username"] or relay["password"]:
         log_console(
-            "    中继应答   : 用户 %s | 密码 %s（目标机凭据,不回显）",
+            "    中继应答   : 用户 %s | 密码 %s（按提示符目标主机查 relay_hosts,不回显）",
             relay["username"] or "待 /input 应答",
             "已配置" if relay["password"] else "待 /input 应答",
         )
@@ -446,6 +446,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 relay_username=relay["username"],
                 relay_password=relay["password"],
                 relay_prompt_timeout=relay["prompt_timeout"],
+                relay_password_resolver=make_relay_password_resolver(config),
             )
             connected = connect_with_retries(
                 bridge,

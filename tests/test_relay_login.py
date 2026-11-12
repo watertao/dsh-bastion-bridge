@@ -29,16 +29,19 @@ class _RelayChannel:
         expect_password="pw",
         password_delay=0.0,
         reject_password=False,
+        reject_delay=0.0,
         direct=False,
+        password_prompt=b"root@192.0.2.216's password: ",
     ):
         self.sent = []
         self.reads = 0
         self.closed = False
         self._timeout = None
         # 真实环境抓到的格式：root@192.0.2.216's password:
-        self._password_prompt = b"root@192.0.2.216's password: "
+        self._password_prompt = password_prompt
         self._password_delay = password_delay
         self._reject_password = reject_password
+        self._reject_delay = reject_delay
         self._expect_user = expect_user
         self._expect_password = expect_password
         self._pending = None  # (monotonic 到期时间, 待入队字节)
@@ -78,9 +81,14 @@ class _RelayChannel:
             )
         elif self._stage == 1 and text.rstrip("\n") == self._expect_password:
             if self._reject_password:
-                self._queue.append(
+                # 拒绝回包可能要等中继→目标机的认证往返（实测 ~2s）才到。
+                rejection = (
                     b"Permission denied, please try again.\r\n" + self._password_prompt
                 )
+                if self._reject_delay > 0:
+                    self._pending = (time.monotonic() + self._reject_delay, rejection)
+                else:
+                    self._queue.append(rejection)
                 self._stage = 1
             else:
                 self._queue.append(b"\r\nroot@bastion-test-host:~# ")
@@ -134,6 +142,7 @@ def _connected_bridge(channel, **kwargs):
         relay_password=kwargs.get("relay_password", "pw"),
         # 生产最小窗口是 3s；测试同样走这条下限，避免用例被静默夹紧而不自知。
         relay_prompt_timeout=kwargs.get("relay_prompt_timeout", 3.0),
+        relay_password_resolver=kwargs.get("relay_password_resolver"),
     )
     transport = _FakeTransport(channel)
     bridge._transport = transport
@@ -213,6 +222,60 @@ class RelayLoginTests(unittest.TestCase):
         self.assertIn("拒绝", result.get("error", ""))
         self.assertNotIn("stty -echo\n", channel.sent)
         self.assertIn("pw\n", channel.sent)
+
+    def test_password_resolved_from_prompt_host(self):
+        # 中继部署：命令行主机是中继 IP，目标主机只出现在密码提示符里；
+        # relay_hosts 条目必须按提示符解析出的目标主机命中。
+        channel = _RelayChannel(expect_password="host-pw")
+
+        def resolver(host):
+            return "host-pw" if host == "192.0.2.216" else "WRONG-PW"
+
+        bridge = _connected_bridge(
+            channel, relay_password="global-pw", relay_password_resolver=resolver
+        )
+        result = bridge.execute("df -h", timeout=20)
+        self.assertEqual(result.get("exit_code"), 0, result)
+        sent = "".join(channel.sent)
+        self.assertIn("host-pw\n", sent)
+        self.assertNotIn("global-pw\n", sent)
+        self.assertNotIn("WRONG-PW\n", sent)
+
+    def test_password_resolver_empty_result_falls_back_to_static(self):
+        channel = _RelayChannel()
+        bridge = _connected_bridge(
+            channel, relay_password="pw", relay_password_resolver=lambda host: ""
+        )
+        result = bridge.execute("df -h", timeout=20)
+        self.assertEqual(result.get("exit_code"), 0, result)
+        self.assertIn("pw\n", "".join(channel.sent))
+
+    def test_prompt_without_host_keeps_static_password(self):
+        # 提示符不含 user@host（如纯 "Password: "）时解析不出主机，
+        # 不得调用解析器，按静态 relay_password 应答。
+        channel = _RelayChannel(password_prompt=b"Password: ", expect_password="pw")
+        bridge = _connected_bridge(
+            channel,
+            relay_password="pw",
+            relay_password_resolver=lambda host: "SHOULD-NOT-SEND",
+        )
+        result = bridge.execute("df -h", timeout=20)
+        self.assertEqual(result.get("exit_code"), 0, result)
+        sent = "".join(channel.sent)
+        self.assertIn("pw\n", sent)
+        self.assertNotIn("SHOULD-NOT-SEND", sent)
+
+    def test_delayed_rejection_detected_before_ready(self):
+        # 拒绝回包晚于静默窗口到达（实测 ~2s）：必须等到它而不是宣告就绪，
+        # 否则随后注入的 stty/指令会被新密码提示符当成密码吃掉。
+        channel = _RelayChannel(reject_password=True, reject_delay=2.2)
+        bridge = _connected_bridge(channel)
+        result = bridge.execute("df -h", timeout=20)
+        self.assertEqual(result.get("exit_code"), -1)
+        self.assertIn("拒绝", result.get("error", ""))
+        self.assertNotIn("stty -echo\n", channel.sent)
+        self.assertIn("pw\n", channel.sent)
+        self.assertEqual(bridge._relay_ready, set())
 
     def test_stream_relay_pending_does_not_send_interrupt(self):
         channel = _RelayChannel()

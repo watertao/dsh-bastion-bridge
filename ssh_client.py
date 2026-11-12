@@ -26,7 +26,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generator, Optional
+from typing import Any, Callable, Dict, Generator, Optional
 
 import paramiko
 
@@ -171,6 +171,7 @@ class SSHBridge:
         relay_username: str = "",
         relay_password: str = "",
         relay_prompt_timeout: float = 6.0,
+        relay_password_resolver: Optional[Callable[[str], str]] = None,
     ):
         self.params = params
         self._client: Optional[paramiko.SSHClient] = None
@@ -199,6 +200,11 @@ class SSHBridge:
         self._relay_username = str(relay_username or "").strip()
         self._relay_password = str(relay_password or "")
         self._relay_prompt_timeout = max(3.0, float(relay_prompt_timeout))
+        # 中继部署（tmp: 会话）里命令行主机是中继节点 IP，relay_hosts 的
+        # 【目标主机】键直到 password: 提示符文本（root@<目标>'s password:）
+        # 出现才可知；应答前用该回调按提示符解析出的目标主机取密码，
+        # 回调未提供/解析不出主机/返回空串时回落静态 relay_password。
+        self._relay_password_resolver = relay_password_resolver
         # 已完成中继应答的通道键集合（每条新通道都要重新应答一遍）。
         self._relay_ready: set[int] = set()
         # 每条通道的中继应答进度（跨多次指令保持）。
@@ -471,6 +477,15 @@ class SSHBridge:
     # 中继登录提示符（行尾匹配）：齐志 TERM-SSHD 的 login: / login as: / Password: 等。
     _RELAY_LOGIN_RE = re.compile(r"(?:login(?:\s+as)?|username|user)\s*:\s*$", re.IGNORECASE)
     _RELAY_PASSWORD_RE = re.compile(r"password\s*:\s*$", re.IGNORECASE)
+    # 目标机密码提示符中的目标主机（root@<目标IP>'s password:）：
+    # 中继部署里命令行主机是中继节点 IP，这是 relay_hosts 按目标主机
+    # 取凭据的唯一可靠时机。
+    _RELAY_PASSWORD_HOST_RE = re.compile(
+        r"([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+)'s\s+password\s*:\s*$"
+    )
+    # 密码发出后中继→目标机的认证回包（拒绝/新提示符）可能晚于静默窗口
+    # 到达（实测 ~2s）：settle 阶段至少再等这么久才允许宣告就绪。
+    _RELAY_SETTLE_GRACE_SECONDS = 3.0
     # 目标机 shell 提示符（行尾）：login: 之后服务端不再索要密码（如公钥认证）时用它。
     _RELAY_SHELL_RE = re.compile(r"[#$%>]\s*$")
     # 认证被拒的迹象：出现即说明凭据不可用，绝不能继续注入字符。
@@ -502,6 +517,9 @@ class SSHBridge:
         与密码，答完之前 shell 不可用。要点：
 
         * 未配置 relay_username/relay_password（直连部署）→ 立即返回，零行为变化；
+        * 密码提示符文本含目标主机（root@<目标>'s password:）且配置了
+          relay_password_resolver → 按该主机解析 relay_hosts 密码后应答；
+          解析不出主机/回调异常/返回空串时回落静态 relay_password；
         * 提示符出现但对应凭据未配置 → 留给 /input 人工应答，本轮不标记完成；
         * 已应答 login: 后必须继续等到 password: 或目标机 shell 提示符：密码提示
           依赖堡垒机到目标机的下一跳 ssh 握手，可能晚于静默窗口；此处若"静默即
@@ -516,7 +534,7 @@ class SSHBridge:
             self._relay_ready.add(key)
             return
 
-        state = self._relay_stage.setdefault(key, {"user": False, "pw": False})
+        state = self._relay_stage.setdefault(key, {"user": False, "pw": False, "host": ""})
         quiet_window = max(0.3, min(1.5, self._relay_prompt_timeout / 2))
         # 每个提示符的等待窗口：等目标机密码提示要跨一次 ssh 握手，不能用静默窗口衡量。
         progress_timeout = self._relay_prompt_timeout
@@ -572,7 +590,25 @@ class SSHBridge:
                         continue
 
                     if not state["pw"] and self._RELAY_PASSWORD_RE.search(tail):
-                        if not self._relay_password:
+                        host_match = self._RELAY_PASSWORD_HOST_RE.search(buffer.rstrip())
+                        prompt_host = host_match.group(2) if host_match else ""
+                        if prompt_host:
+                            state["host"] = prompt_host
+                        password_to_send = self._relay_password
+                        if prompt_host and self._relay_password_resolver is not None:
+                            try:
+                                resolved = str(
+                                    self._relay_password_resolver(prompt_host) or ""
+                                )
+                                if resolved:
+                                    password_to_send = resolved
+                            except Exception as exc:  # noqa: BLE001 - 回落到静态密码
+                                self._logger.warning(
+                                    "中继密码按主机解析失败（%s）：%s；回落 relay_password",
+                                    prompt_host,
+                                    exc,
+                                )
+                        if not password_to_send:
                             # 密码未配置：不发送任何字符，把提示符留给 /input。
                             self._logger.warning(
                                 "中继提示 password: 待应答；relay_password 未配置，"
@@ -580,16 +616,23 @@ class SSHBridge:
                             )
                             pending_manual = True
                             break
-                        self._logger.info("中继提示 password: 已应答")
+                        self._logger.info(
+                            "中继提示 password: 已应答（目标主机 %s）", prompt_host or "未识别"
+                        )
                         self._send_all(
-                            channel, (self._relay_password + "\n").encode("utf-8"),
+                            channel, (password_to_send + "\n").encode("utf-8"),
                             timeout=10.0, lock=False,
                         )
                         self._bump_activity()
                         state["pw"] = True
                         stage = "settle"
                         buffer = ""
-                        quiet_deadline = time.monotonic() + quiet_window
+                        # 拒绝回包可能晚于静默窗口到达（实测 ~2s）：多等一会儿
+                        # 再宣告就绪，否则随后注入的指令会被新出现的密码提示
+                        # 符当成密码吃掉。
+                        quiet_deadline = time.monotonic() + max(
+                            quiet_window, self._RELAY_SETTLE_GRACE_SECONDS
+                        )
                         continue
 
                     if stage == "probe":
@@ -639,9 +682,12 @@ class SSHBridge:
             # 保持未完成状态：/input 应答后，下一次指令的探测轮会静默通过。
             return
         if rejected:
+            target = str(state.get("host") or "")
+            where = f"（目标主机 {target}）" if target else ""
+            entry = f"relay_hosts[{target}]/" if target else ""
             raise RelayLoginIncomplete(
-                "中继认证被拒绝：目标机用户名/密码未被接受，请检查 "
-                "relay_username/relay_password（未发送任何指令）"
+                f"中继认证被拒绝{where}：目标机用户名/密码未被接受，请检查 "
+                f"{entry}relay_username/relay_password（未发送任何指令）"
             )
         if failure is not None:
             raise RelayLoginIncomplete(

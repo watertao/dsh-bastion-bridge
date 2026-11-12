@@ -41,3 +41,6 @@ Thumbs.db
 
 # 厂商二进制与分析样本（不入库，版权与体积原因）
 assets/
+
+# 本工作区真实内网拓扑（公开仓库不入库；deployment-office.md 为脱敏版）
+skill/bastion-qizhi/references/deployment-local.md

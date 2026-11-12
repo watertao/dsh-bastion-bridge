@@ -2,7 +2,7 @@
 
 import unittest
 
-from config import resolve_relay_credentials
+from config import make_relay_password_resolver, resolve_relay_credentials
 
 
 class ResolveRelayCredentialsTests(unittest.TestCase):
@@ -104,6 +104,36 @@ class ResolveRelayCredentialsTests(unittest.TestCase):
         }
         result = resolve_relay_credentials(config, "10.1.1.100")
         self.assertEqual(result["prompt_timeout"], 3.0)
+
+
+class MakeRelayPasswordResolverTests(unittest.TestCase):
+    def test_resolver_exact_hit_overrides_global(self):
+        config = {
+            "relay_password": "global-pw",
+            "relay_hosts": {"10.1.1.100": {"username": "root", "password": "host-pw"}},
+        }
+        resolver = make_relay_password_resolver(config)
+        self.assertEqual(resolver("10.1.1.100"), "host-pw")
+
+    def test_resolver_miss_falls_back_to_global(self):
+        config = {
+            "relay_password": "global-pw",
+            "relay_hosts": {"10.1.1.100": {"username": "root", "password": "host-pw"}},
+        }
+        resolver = make_relay_password_resolver(config)
+        self.assertEqual(resolver("10.99.99.99"), "global-pw")
+
+    def test_resolver_wildcard_entry(self):
+        config = {
+            "relay_password": "global-pw",
+            "relay_hosts": {"*": {"password": "wild-pw"}},
+        }
+        resolver = make_relay_password_resolver(config)
+        self.assertEqual(resolver("10.99.99.99"), "wild-pw")
+
+    def test_resolver_without_relay_hosts_uses_global(self):
+        resolver = make_relay_password_resolver({"relay_password": "global-pw"})
+        self.assertEqual(resolver("10.99.99.99"), "global-pw")
 
 
 if __name__ == "__main__":
